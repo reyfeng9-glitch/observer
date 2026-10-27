@@ -261,6 +261,29 @@ def send(url: str, text: str, opener=urllib.request.urlopen) -> dict:
     return result
 
 
+# Feishu sometimes refuses at 09:00 sharp, when every scheduled bot posts at once
+# (19006 internal error, 11232 frequency limited): retry for about a quarter of an hour.
+RETRY_DELAYS = (60, 120, 180, 240, 300)
+_PERMANENT = ("19024", "19001", "19002", "19007", "19021", "19022")  # keyword, bad URL / signature: retrying cannot help
+
+
+def send_with_retry(url: str, text: str, *, sleep=None, opener=urllib.request.urlopen) -> int:
+    """Send; on a temporary refusal wait and try again. Returns the number of attempts."""
+    import time
+    sleep = sleep or time.sleep
+    for attempt, delay in enumerate((*RETRY_DELAYS, None), start=1):
+        try:
+            send(url, text, opener=opener)
+            return attempt
+        except (RuntimeError, OSError, ValueError) as error:
+            permanent = isinstance(error, RuntimeError) and any(f"code={code} " in str(error) for code in _PERMANENT)
+            if delay is None or permanent:
+                raise
+            print(f"attempt {attempt} failed ({error}); retrying in {delay} s", file=sys.stderr, flush=True)
+            sleep(delay)
+    raise AssertionError("unreachable")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--webhook-file", help="file containing the Feishu bot webhook URL")
@@ -284,8 +307,8 @@ def main(argv: list[str] | None = None) -> int:
     if not args.webhook_file:
         print("--webhook-file is required unless --dry-run", file=sys.stderr)
         return 2
-    send(webhook_url(args.webhook_file), text)
-    print(f"sent ({len(rows)} records read)")
+    attempts = send_with_retry(webhook_url(args.webhook_file), text)
+    print(f"{datetime.now(timezone.utc):%Y-%m-%d %H:%M:%S}Z sent ({len(rows)} records read, attempt {attempts})")
     return 0
 
 

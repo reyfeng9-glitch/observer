@@ -92,3 +92,21 @@ def test_fetch_follows_cursor_and_send_checks_feishu_answer(tmp_path):
         return Response(b'{"code":0,"msg":"success"}')
     report.send("https://open.feishu.cn/x", "Observer 日报", opener=feishu)
     assert sent == [{"msg_type": "text", "content": {"text": "Observer 日报"}}]
+
+
+def test_send_retries_temporary_feishu_refusals_but_not_permanent_ones():
+    import pytest
+
+    class Response(io.BytesIO):
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    answers = [b'{"code":19006,"msg":"internal error"}', b'{"code":11232,"msg":"frequency limited"}', b'{"code":0,"msg":"success"}']
+    waits = []
+    attempts = report.send_with_retry("https://open.feishu.cn/x", "Observer", sleep=waits.append,
+                                      opener=lambda request, timeout=0: Response(answers.pop(0)))
+    assert attempts == 3 and waits == [60, 120]
+    with pytest.raises(RuntimeError, match="19024"):
+        report.send_with_retry("https://open.feishu.cn/x", "Observer", sleep=waits.append,
+                               opener=lambda request, timeout=0: Response(b'{"code":19024,"msg":"Key Words Not Found"}'))
+    assert waits == [60, 120]  # no wait for a refusal that retrying cannot fix
